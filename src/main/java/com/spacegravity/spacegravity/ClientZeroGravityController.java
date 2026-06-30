@@ -50,17 +50,24 @@ public final class ClientZeroGravityController {
     private ClientZeroGravityController() {
     }
 
+    public static boolean isZeroGravityEnabled() {
+        return zeroGravityEnabled;
+    }
+
     public static void setZeroGravityEnabled(boolean enabled) {
+        boolean wasEnabled = zeroGravityEnabled;
         zeroGravityEnabled = enabled;
 
         LocalPlayer player = Minecraft.getInstance().player;
         if (player != null) {
             if (enabled) {
-                initializeTracking(player);
-                initializeLocalOrientation(player);
+                ensureTracking(player);
+                if (!wasEnabled || !localOrientationInitialized) {
+                    initializeLocalOrientation(player);
+                }
                 applyClientState(player);
                 applyOrientationToPlayer(player, localOrientation);
-            } else {
+            } else if (wasEnabled) {
                 clearClientState(player);
                 clearOrientationForPlayer(player);
             }
@@ -114,6 +121,7 @@ public final class ClientZeroGravityController {
         updateLocalOrientation(player);
         applyClientState(player);
         applyOrientationToPlayer(player, localOrientation);
+        applyPoseOnly(player);
         player.setOnGround(false);
         player.resetFallDistance();
     }
@@ -129,13 +137,19 @@ public final class ClientZeroGravityController {
         }
 
         ensureTracking(player);
-        measuredVelocity = ZeroGravityPhysics.measureMovement(lastPosition, player.position());
+        measuredVelocity = player.getDeltaMovement();
         lastPosition = player.position();
+        player.setOnGround(false);
+        player.resetFallDistance();
     }
 
     @SubscribeEvent
     public static void onMovementInput(MovementInputUpdateEvent event) {
-        if (!(event.getEntity() instanceof LocalPlayer player) || !zeroGravityEnabled) {
+        if (!(event.getEntity() instanceof LocalPlayer player)) {
+            return;
+        }
+
+        if (!zeroGravityEnabled) {
             return;
         }
 
@@ -148,21 +162,10 @@ public final class ClientZeroGravityController {
 
         Input input = event.getInput();
         ZeroGravityOrientation.OrientationData orientation = localOrientation;
-        ZeroGravityInputState inputState = new ZeroGravityInputState(
-                SpaceGravityKeyMappings.forwardImpulse(),
-                0.0F,
-                SpaceGravityKeyMappings.verticalImpulse(),
-                SpaceGravityKeyMappings.boosted(),
-                (float) orientation.forward().x,
-                (float) orientation.forward().y,
-                (float) orientation.forward().z,
-                (float) orientation.up().x,
-                (float) orientation.up().y,
-                (float) orientation.up().z
-        );
+        ZeroGravityInputState inputState = createInputState(input, orientation);
 
         applyClientState(player);
-        applyOrientationToPlayer(player, orientation);
+        applyPoseOnly(player);
         player.setOnGround(false);
         player.resetFallDistance();
         ZeroGravityPushHelper.PushSurface pushSurface = ZeroGravityPushHelper.findNearestPushSurface(player, orientation);
@@ -172,10 +175,15 @@ public final class ClientZeroGravityController {
             localPushAnimation = PushAnimationState.active(pushSurface.toPushData(player.getBoundingBox().getCenter()));
         }
 
-        player.setDeltaMovement(ZeroGravityPhysics.computeNextVelocity(measuredVelocity, inputState, canPushOff));
+        player.setDiscardFriction(true);
+        if (canPushOff && thrustDirection.lengthSqr() > 1.0E-6D) {
+            measuredVelocity = player.getDeltaMovement().add(ZeroGravityPhysics.computeFreeThrustVelocityDelta(inputState));
+            player.setDeltaMovement(measuredVelocity);
+            player.setOnGround(false);
+            player.resetFallDistance();
+            clearVanillaInput(input);
+        }
         SpaceGravityNetwork.sendInputToServer(inputState);
-
-        clearVanillaInput(input);
     }
 
     @SubscribeEvent
@@ -190,6 +198,7 @@ public final class ClientZeroGravityController {
         if (zeroGravityEnabled && minecraft.player != null) {
             updateLocalOrientation(minecraft.player);
             applyOrientationToPlayer(minecraft.player, localOrientation);
+            applyPoseOnly(minecraft.player);
             ZeroGravityClientRenderAccess.applyZeroGravityVisualState(minecraft.player);
         }
 
@@ -229,6 +238,7 @@ public final class ClientZeroGravityController {
         updateLocalOrientation(minecraft.player);
         applyFrameRollInput(minecraft);
         applyOrientationToPlayer(minecraft.player, localOrientation);
+        applyPoseOnly(minecraft.player);
 
         ZeroGravityOrientation.CameraAngles angles = ZeroGravityOrientation.toCameraAngles(localOrientation);
         event.setYaw(angles.yaw());
@@ -323,6 +333,7 @@ public final class ClientZeroGravityController {
 
     private static void applyClientState(LocalPlayer player) {
         player.setNoGravity(true);
+        player.setDiscardFriction(true);
         player.getAbilities().flying = false;
         player.resetFallDistance();
 
@@ -333,6 +344,7 @@ public final class ClientZeroGravityController {
 
     private static void clearClientState(LocalPlayer player) {
         player.setNoGravity(false);
+        player.setDiscardFriction(false);
         ZeroGravityClientRenderAccess.clearZeroGravityVisualState(player);
     }
 
@@ -453,10 +465,7 @@ public final class ClientZeroGravityController {
 
     private static void applyOrientationToPlayer(Player player, ZeroGravityOrientation.OrientationData orientation) {
         ZeroGravityOrientation.CameraAngles angles = ZeroGravityOrientation.toCameraAngles(orientation);
-        if (player.getForcedPose() != Pose.SWIMMING) {
-            player.setForcedPose(Pose.SWIMMING);
-            player.refreshDimensions();
-        }
+        applyPoseOnly(player);
         player.setYRot(angles.yaw());
         player.yRotO = angles.yaw();
         player.setXRot(angles.pitch());
@@ -465,6 +474,13 @@ public final class ClientZeroGravityController {
         player.yHeadRotO = angles.yaw();
         player.setYBodyRot(angles.yaw());
         player.yBodyRotO = angles.yaw();
+    }
+
+    private static void applyPoseOnly(Player player) {
+        if (player.getForcedPose() != Pose.SWIMMING) {
+            player.setForcedPose(Pose.SWIMMING);
+            player.refreshDimensions();
+        }
     }
 
     private static void clearOrientationForPlayer(Player player) {
@@ -518,6 +534,25 @@ public final class ClientZeroGravityController {
         input.right = false;
         input.jumping = false;
         input.shiftKeyDown = false;
+    }
+
+    private static float verticalImpulse(Input input) {
+        return (input.jumping ? 1.0F : 0.0F) - (input.shiftKeyDown ? 1.0F : 0.0F);
+    }
+
+    private static ZeroGravityInputState createInputState(Input input, ZeroGravityOrientation.OrientationData orientation) {
+        return new ZeroGravityInputState(
+                input.forwardImpulse,
+                input.leftImpulse,
+                verticalImpulse(input),
+                SpaceGravityKeyMappings.boosted(),
+                (float) orientation.forward().x,
+                (float) orientation.forward().y,
+                (float) orientation.forward().z,
+                (float) orientation.up().x,
+                (float) orientation.up().y,
+                (float) orientation.up().z
+        );
     }
 
     private static double easePush(double progress) {

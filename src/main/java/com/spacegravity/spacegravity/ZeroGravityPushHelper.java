@@ -8,10 +8,18 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
 public final class ZeroGravityPushHelper {
     private static final double EPSILON = 1.0E-5D;
+    private static final List<PushSurfaceProvider> PROVIDERS = new CopyOnWriteArrayList<>();
 
     private ZeroGravityPushHelper() {
+    }
+
+    public static void registerProvider(PushSurfaceProvider provider) {
+        PROVIDERS.add(provider);
     }
 
     public static PushSurface findNearestPushSurface(Player player, ZeroGravityOrientation.OrientationData orientation) {
@@ -63,9 +71,18 @@ public final class ZeroGravityPushHelper {
             }
         }
 
-        return nearestDistanceSqr == Double.MAX_VALUE
+        PushSurface nearest = nearestDistanceSqr == Double.MAX_VALUE
                 ? PushSurface.NONE
                 : new PushSurface(true, nearestNormal, nearestContactPoint, nearestAnchorPoint, nearestLimb);
+
+        for (PushSurfaceProvider provider : PROVIDERS) {
+            PushSurface candidate = provider.findNearestPushSurface(player, orientation, searchBox);
+            if (candidate.available() && (!nearest.available() || candidate.distanceSqr() < nearest.distanceSqr())) {
+                nearest = candidate;
+            }
+        }
+
+        return nearest;
     }
 
     private static Vec3 clampToBox(Vec3 point, AABB box) {
@@ -76,11 +93,19 @@ public final class ZeroGravityPushHelper {
         );
     }
 
+    public interface PushSurfaceProvider {
+        PushSurface findNearestPushSurface(Player player, ZeroGravityOrientation.OrientationData orientation, AABB searchBox);
+    }
+
     public record PushSurface(boolean available, Vec3 normal, Vec3 contactPoint, Vec3 anchorPoint, ZeroGravityPushData.ContactLimb limb) {
         private static final PushSurface NONE = new PushSurface(false, Vec3.ZERO, Vec3.ZERO, Vec3.ZERO, ZeroGravityPushData.ContactLimb.NONE);
 
         public ZeroGravityPushData toPushData(Vec3 playerCenter) {
             return this.available ? new ZeroGravityPushData(this.limb, this.contactPoint.subtract(playerCenter)) : ZeroGravityPushData.none();
+        }
+
+        public double distanceSqr() {
+            return this.anchorPoint.distanceToSqr(this.contactPoint);
         }
     }
 }

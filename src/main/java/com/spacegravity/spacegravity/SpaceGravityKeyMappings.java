@@ -7,13 +7,9 @@ import org.lwjgl.glfw.GLFW;
 
 public final class SpaceGravityKeyMappings {
     public static final String CATEGORY = "key.categories.space_gravity";
-    public static final KeyMapping THRUST_FORWARD = key("thrust_forward", GLFW.GLFW_KEY_W);
-    public static final KeyMapping THRUST_BACKWARD = key("thrust_backward", GLFW.GLFW_KEY_S);
-    public static final KeyMapping THRUST_UP = key("thrust_up", GLFW.GLFW_KEY_SPACE);
-    public static final KeyMapping THRUST_DOWN = key("thrust_down", GLFW.GLFW_KEY_LEFT_SHIFT);
     public static final KeyMapping BOOST = key("boost", GLFW.GLFW_KEY_LEFT_CONTROL);
-    public static final KeyMapping ROLL_LEFT = key("roll_left", GLFW.GLFW_KEY_A);
-    public static final KeyMapping ROLL_RIGHT = key("roll_right", GLFW.GLFW_KEY_D);
+    public static final KeyMapping ROLL_LEFT = key("roll_left", GLFW.GLFW_KEY_Q);
+    public static final KeyMapping ROLL_RIGHT = key("roll_right", GLFW.GLFW_KEY_E);
 
     private SpaceGravityKeyMappings() {
     }
@@ -26,14 +22,6 @@ public final class SpaceGravityKeyMappings {
                 keyCode,
                 CATEGORY
         );
-    }
-
-    public static float forwardImpulse() {
-        return impulse(THRUST_FORWARD, THRUST_BACKWARD);
-    }
-
-    public static float verticalImpulse() {
-        return impulse(THRUST_UP, THRUST_DOWN);
     }
 
     public static boolean boosted() {

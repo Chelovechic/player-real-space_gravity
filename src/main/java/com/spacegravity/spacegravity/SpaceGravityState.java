@@ -8,71 +8,76 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 public final class SpaceGravityState {
     private static final String ROOT_TAG = SpaceGravityMod.MODID;
     private static final String ZERO_GRAVITY_ENABLED_TAG = "zeroGravityEnabled";
+    private static final String SPACE_ENGINE_RUNTIME_DISABLED_TAG = "spaceEngineRuntimeDisabled";
     private static final String SAVED_MAYFLY_TAG = "savedMayfly";
     private static final String SAVED_FLYING_TAG = "savedFlying";
     private static final Map<UUID, RuntimeState> RUNTIME_STATES = new HashMap<>();
+    private static final Set<UUID> ACTIVE_RUNTIME_PLAYERS = new HashSet<>();
 
     private SpaceGravityState() {
     }
 
     public static boolean isZeroGravityEnabled(Player player) {
+        if (ACTIVE_RUNTIME_PLAYERS.contains(player.getUUID())) {
+            return true;
+        }
+
         CompoundTag data = getOrCreateData(player);
         return data.contains(ZERO_GRAVITY_ENABLED_TAG, Tag.TAG_BYTE) && data.getBoolean(ZERO_GRAVITY_ENABLED_TAG);
     }
 
+    public static boolean isPersistedZeroGravityEnabled(Player player) {
+        CompoundTag data = getOrCreateData(player);
+        return data.contains(ZERO_GRAVITY_ENABLED_TAG, Tag.TAG_BYTE) && data.getBoolean(ZERO_GRAVITY_ENABLED_TAG);
+    }
+
+    public static boolean isSpaceEngineRuntimeManuallyDisabled(Player player) {
+        CompoundTag data = getOrCreateData(player);
+        return data.contains(SPACE_ENGINE_RUNTIME_DISABLED_TAG, Tag.TAG_BYTE) && data.getBoolean(SPACE_ENGINE_RUNTIME_DISABLED_TAG);
+    }
+
+    public static void setSpaceEngineRuntimeEnabled(ServerPlayer player, boolean enabled) {
+        if (enabled) {
+            if (isSpaceEngineRuntimeManuallyDisabled(player)) {
+                disableRuntime(player);
+                return;
+            }
+            enableRuntime(player);
+            return;
+        }
+
+        if (isPersistedZeroGravityEnabled(player)) {
+            return;
+        }
+
+        disableRuntime(player);
+    }
+
     public static void setZeroGravityEnabled(ServerPlayer player, boolean enabled) {
-        boolean wasEnabled = isZeroGravityEnabled(player);
+        writeSpaceEngineRuntimeDisabledFlag(player, !enabled);
         writeEnabledFlag(player, enabled);
 
-        if (enabled && !wasEnabled) {
-            saveCurrentAbilities(player);
-            initializeRuntime(player);
-        }
-
         if (enabled) {
-            applyZeroGravityRuntime(player);
-            player.connection.resetPosition();
+            enableRuntime(player);
         } else {
-            restoreSavedAbilities(player);
-            player.setNoGravity(false);
-            if (player.getForcedPose() == Pose.SWIMMING) {
-                player.setForcedPose(null);
-                player.refreshDimensions();
-            }
-            syncOrientation(player, false, ZeroGravityOrientation.fromVanillaAngles(player.getYRot(), player.getXRot()), ZeroGravityPushData.none());
-            clearRuntime(player);
-            player.connection.resetPosition();
-        }
-
-        SpaceGravityNetwork.syncPlayer(player, enabled);
-        if (enabled) {
-            syncOrientation(player, true, getOrCreateRuntime(player).orientation, ZeroGravityPushData.none());
+            disableRuntime(player);
         }
     }
 
     public static void applyPersistedState(ServerPlayer player) {
-        if (isZeroGravityEnabled(player)) {
-            initializeRuntime(player);
-            applyZeroGravityRuntime(player);
-            player.connection.resetPosition();
-            syncOrientation(player, true, getOrCreateRuntime(player).orientation, ZeroGravityPushData.none());
+        if (!isSpaceEngineRuntimeManuallyDisabled(player) && isPersistedZeroGravityEnabled(player)) {
+            enableRuntime(player);
         } else {
-            restoreSavedAbilities(player);
-            player.setNoGravity(false);
-            if (player.getForcedPose() == Pose.SWIMMING) {
-                player.setForcedPose(null);
-                player.refreshDimensions();
-            }
-            clearRuntime(player);
+            disableRuntime(player);
         }
-
-        SpaceGravityNetwork.syncPlayer(player, isZeroGravityEnabled(player));
     }
 
     public static void maintainZeroGravity(ServerPlayer player) {
@@ -89,9 +94,10 @@ public final class SpaceGravityState {
         }
 
         RuntimeState runtimeState = getOrCreateRuntime(player);
-        runtimeState.measuredVelocity = ZeroGravityPhysics.measureMovement(runtimeState.lastPosition, player.position());
+        runtimeState.measuredVelocity = player.getDeltaMovement();
         runtimeState.lastPosition = player.position();
-        player.setDeltaMovement(runtimeState.measuredVelocity);
+        player.setOnGround(false);
+        player.resetFallDistance();
     }
 
     public static void handleClientInput(ServerPlayer player, ZeroGravityInputState inputState) {
@@ -105,20 +111,25 @@ public final class SpaceGravityState {
         ZeroGravityPushHelper.PushSurface pushSurface = ZeroGravityPushHelper.findNearestPushSurface(player, runtimeState.orientation);
         Vec3 thrustDirection = ZeroGravityPhysics.computeThrustDirection(inputState);
         boolean canPushOff = pushSurface.available();
-        Vec3 nextVelocity = ZeroGravityPhysics.computeNextVelocity(runtimeState.measuredVelocity, inputState, canPushOff);
-        ZeroGravityPushData pushData = canPushOff && thrustDirection.lengthSqr() > 1.0E-6D
+        ZeroGravityPushData pushData = pushSurface.available() && thrustDirection.lengthSqr() > 1.0E-6D
                 ? pushSurface.toPushData(player.getBoundingBox().getCenter())
                 : ZeroGravityPushData.none();
-        player.setDeltaMovement(nextVelocity);
-        player.hasImpulse = true;
-        player.hurtMarked = true;
-        player.setOnGround(false);
-        player.resetFallDistance();
+
+        if (canPushOff && thrustDirection.lengthSqr() > 1.0E-6D) {
+            Vec3 externalVelocity = player.getDeltaMovement().add(ZeroGravityPhysics.computeFreeThrustVelocityDelta(inputState));
+            runtimeState.measuredVelocity = externalVelocity;
+            player.setDeltaMovement(externalVelocity);
+            player.hasImpulse = true;
+            player.hurtMarked = true;
+            player.setOnGround(false);
+            player.resetFallDistance();
+        }
         syncOrientation(player, true, runtimeState.orientation, pushData);
     }
 
     public static void clearRuntime(ServerPlayer player) {
         RUNTIME_STATES.remove(player.getUUID());
+        ACTIVE_RUNTIME_PLAYERS.remove(player.getUUID());
     }
 
     public static void syncTrackedOrientationTo(ServerPlayer recipient, ServerPlayer target) {
@@ -128,6 +139,40 @@ public final class SpaceGravityState {
 
         RuntimeState runtimeState = getOrCreateRuntime(target);
         SpaceGravityNetwork.syncOrientationToPlayer(recipient, target, true, runtimeState.orientation, ZeroGravityPushData.none());
+    }
+
+    private static void enableRuntime(ServerPlayer player) {
+        boolean wasEnabled = ACTIVE_RUNTIME_PLAYERS.contains(player.getUUID());
+        ACTIVE_RUNTIME_PLAYERS.add(player.getUUID());
+
+        if (!wasEnabled) {
+            saveCurrentAbilities(player);
+            initializeRuntime(player);
+            SpaceGravityNetwork.syncPlayer(player, true);
+            syncOrientation(player, true, getOrCreateRuntime(player).orientation, ZeroGravityPushData.none());
+            player.connection.resetPosition();
+        }
+
+        applyZeroGravityRuntime(player);
+    }
+
+    private static void disableRuntime(ServerPlayer player) {
+        boolean wasEnabled = ACTIVE_RUNTIME_PLAYERS.remove(player.getUUID());
+
+        restoreSavedAbilities(player);
+        player.setNoGravity(false);
+        if (player.getForcedPose() == Pose.SWIMMING) {
+            player.setForcedPose(null);
+            player.refreshDimensions();
+        }
+
+        if (wasEnabled) {
+            syncOrientation(player, false, ZeroGravityOrientation.fromVanillaAngles(player.getYRot(), player.getXRot()), ZeroGravityPushData.none());
+            player.connection.resetPosition();
+        }
+
+        clearRuntime(player);
+        SpaceGravityNetwork.syncPlayer(player, false);
     }
 
     private static void applyZeroGravityRuntime(ServerPlayer player) {
@@ -202,6 +247,12 @@ public final class SpaceGravityState {
     private static void writeEnabledFlag(ServerPlayer player, boolean enabled) {
         CompoundTag data = getOrCreateData(player);
         data.putBoolean(ZERO_GRAVITY_ENABLED_TAG, enabled);
+        saveData(player, data);
+    }
+
+    private static void writeSpaceEngineRuntimeDisabledFlag(ServerPlayer player, boolean disabled) {
+        CompoundTag data = getOrCreateData(player);
+        data.putBoolean(SPACE_ENGINE_RUNTIME_DISABLED_TAG, disabled);
         saveData(player, data);
     }
 

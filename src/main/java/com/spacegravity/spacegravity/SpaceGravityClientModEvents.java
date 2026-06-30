@@ -16,10 +16,6 @@ public final class SpaceGravityClientModEvents {
 
     @SubscribeEvent
     public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
-        event.register(SpaceGravityKeyMappings.THRUST_FORWARD);
-        event.register(SpaceGravityKeyMappings.THRUST_BACKWARD);
-        event.register(SpaceGravityKeyMappings.THRUST_UP);
-        event.register(SpaceGravityKeyMappings.THRUST_DOWN);
         event.register(SpaceGravityKeyMappings.BOOST);
         event.register(SpaceGravityKeyMappings.ROLL_LEFT);
         event.register(SpaceGravityKeyMappings.ROLL_RIGHT);
